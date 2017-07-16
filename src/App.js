@@ -1,4 +1,6 @@
 import React, {Component} from 'react';
+import {sortBy} from 'lodash';
+import classNames from 'classnames';
 import fetch from 'isomorphic-fetch'
 import './App.css';
 
@@ -12,6 +14,14 @@ const PARAM_SEARCH = 'query=';
 const PARAM_PAGE = 'page=';
 const PARAM_HPP = 'hitsPerPage=';
 
+const SORTS = {
+    NONE: list => list,
+    TITLE: list => sortBy(list, 'title'),
+    AUTHOR: list => sortBy(list, 'author'),
+    COMMENTS: list => sortBy(list, 'num_comments').reverse(),
+    POINTS: list => sortBy(list, 'points').reverse(),
+};
+
 class App extends Component {
 
     constructor(props) {
@@ -21,6 +31,9 @@ class App extends Component {
             results: null,
             searchKey: '',
             searchTerm: DEFAULT_QUERY,
+            isLoading: false,
+            sortKey: 'NONE',
+            isSortReverse: false,
         };
 
         this.needsToSearchTopStories = this.needsToSearchTopStories.bind(this);
@@ -29,6 +42,13 @@ class App extends Component {
         this.onSearchChange = this.onSearchChange.bind(this);
         this.onSearchSubmit = this.onSearchSubmit.bind(this);
         this.onDismiss = this.onDismiss.bind(this);
+        this.onSort = this.onSort.bind(this);
+    }
+
+    onSort(sortKey) {
+        const isSortReverse = this.state.sortKey === sortKey &&
+            !this.state.isSortReverse;
+        this.setState({sortKey, isSortReverse});
     }
 
     needsToSearchTopStories(searchTerm) {
@@ -36,8 +56,8 @@ class App extends Component {
     }
 
     setSearchTopStories(result) {
-        const { hits, page } = result;
-        const { searchKey, results } = this.state;
+        const {hits, page} = result;
+        const {searchKey, results} = this.state;
 
         const oldHits = results && results[searchKey]
             ? results[searchKey].hits
@@ -51,30 +71,33 @@ class App extends Component {
         this.setState({
             results: {
                 ...results,
-                [searchKey]: { hits: updatedHits, page }
-            }
+                [searchKey]: {hits: updatedHits, page}
+            },
+            isLoading: false
         });
     }
 
     fetchSearchTopStories(searchTerm, page) {
+        this.setState({isLoading: true});
+
         fetch(`${PATH_BASE}${PATH_SEARCH}?${PARAM_SEARCH}${searchTerm}&${PARAM_PAGE}${page}&${PARAM_HPP}${DEFAULT_HPP}`)
             .then(response => response.json())
             .then(result => this.setSearchTopStories(result));
     }
 
     componentDidMount() {
-        const { searchTerm } = this.state;
-        this.setState({ searchKey: searchTerm });
+        const {searchTerm} = this.state;
+        this.setState({searchKey: searchTerm});
         this.fetchSearchTopStories(searchTerm, DEFAULT_PAGE);
     }
 
     onSearchChange(event) {
-        this.setState({ searchTerm: event.target.value });
+        this.setState({searchTerm: event.target.value});
     }
 
     onSearchSubmit(event) {
-        const { searchTerm } = this.state;
-        this.setState({ searchKey: searchTerm });
+        const {searchTerm} = this.state;
+        this.setState({searchKey: searchTerm});
 
         if (this.needsToSearchTopStories(searchTerm)) {
             this.fetchSearchTopStories(searchTerm, DEFAULT_PAGE);
@@ -85,15 +108,15 @@ class App extends Component {
     }
 
     onDismiss(id) {
-        const { searchKey, results } = this.state;
-        const { hits, page } = results[searchKey];
+        const {searchKey, results} = this.state;
+        const {hits, page} = results[searchKey];
 
         const isNotId = item => item.objectID !== id;
         const updatedHits = hits.filter(isNotId);
         this.setState({
             results: {
                 ...results,
-                [searchKey]: { hits: updatedHits, page }
+                [searchKey]: {hits: updatedHits, page}
             }
         });
     }
@@ -102,7 +125,10 @@ class App extends Component {
         const {
             searchTerm,
             results,
-            searchKey
+            searchKey,
+            isLoading,
+            sortKey,
+            isSortReverse
         } = this.state;
         const page = (
                 results &&
@@ -128,19 +154,24 @@ class App extends Component {
                 </div>
                 <Table
                     list={list}
+                    sortKey={sortKey}
+                    isSortReverse={isSortReverse}
+                    onSort={this.onSort}
                     onDismiss={this.onDismiss}
                 />
                 <div className="interactions">
-                    <Button onClick={() => this.fetchSearchTopStories(searchKey, page + 1)}>
+                    <ButtonWithLoading
+                        isLoading={isLoading}
+                        onClick={() => this.fetchSearchTopStories(searchKey, page + 1)}>
                         More
-                    </Button>
+                    </ButtonWithLoading>
                 </div>
             </div>
         );
     }
 }
 
-const Search = ({ value, onChange, onSubmit, children }) =>
+const Search = ({value, onChange, onSubmit, children}) =>
     <form onSubmit={onSubmit}>
         <input
             type="text"
@@ -152,8 +183,13 @@ const Search = ({ value, onChange, onSubmit, children }) =>
         </button>
     </form>
 
+const Loading = () =>
+    <div>Loading ...</div>
 
-const Button = ({ onClick, className = '', children }) =>
+const withLoading = (Component) => (props) =>
+    props.isLoading ? <Loading/> : <Component { ...props}/>
+
+const Button = ({onClick, className = '', children}) =>
     <button
         onClick={onClick}
         className={className}
@@ -162,24 +198,92 @@ const Button = ({ onClick, className = '', children }) =>
         {children}
     </button>
 
+const ButtonWithLoading = withLoading(Button);
 
-const Table = ({ list, onDismiss }) =>
-    <div className="table">
-        { list.map((item) =>
-            <div key={item.objectID} className="table-row">
-                <span style={{ width: '40%' }}>
+const Sort = ({sortKey, activeSortKey, onSort, children}) => {
+    const sortClass = classNames(
+        'button-inline',
+        {'button-active': sortKey === activeSortKey}
+    );
+
+    return (
+        <Button
+            onClick={() => onSort(sortKey)}
+            className={sortClass}
+        >
+            {children}
+        </Button>
+    );
+}
+const Table = ({
+                   list,
+                   sortKey,
+                   isSortReverse,
+                   onSort,
+                   onDismiss
+               }) => {
+    const sortedList = SORTS[sortKey](list);
+    const reverseSortedList = isSortReverse
+        ? sortedList.reverse()
+        : sortedList;
+
+    return (<div className="table">
+            <div className="table-header">
+            <span style={{width: '40%'}}>
+                <Sort
+                    sortKey={'TITLE'}
+                    onSort={onSort}
+                    activeSortKey={sortKey}
+                >
+                Title
+                </Sort>
+            </span>
+                <span style={{width: '30%'}}>
+                <Sort
+                    sortKey={'AUTHOR'}
+                    onSort={onSort}
+                    activeSortKey={sortKey}
+                >
+                    Author
+                </Sort>
+            </span>
+                <span style={{width: '10%'}}>
+                <Sort
+                    sortKey={'COMMENTS'}
+                    onSort={onSort}
+                    activeSortKey={sortKey}
+                >
+                Comments
+                </Sort>
+            </span>
+                <span style={{width: '10%'}}>
+                <Sort
+                    sortKey={'POINTS'}
+                    onSort={onSort}
+                    activeSortKey={sortKey}
+                >
+                Points
+                </Sort>
+            </span>
+                <span style={{width: '10%'}}>
+                Archive
+            </span>
+            </div>
+            { reverseSortedList.map((item) =>
+                <div key={item.objectID} className="table-row">
+                <span style={{width: '40%'}}>
                     <a href={item.url}>{item.title}</a>
                 </span>
-                <span style={{ width: '30%' }}>
+                    <span style={{width: '30%'}}>
                     {item.author}
                 </span>
-                <span style={{ width: '10%' }}>
+                    <span style={{width: '10%'}}>
                     {item.num_comments}
                 </span>
-                <span style={{ width: '10%' }}>
+                    <span style={{width: '10%'}}>
                     {item.points}
                 </span>
-                <span style={{ width: '10%' }}>
+                    <span style={{width: '10%'}}>
                     <Button
                         onClick={() => onDismiss(item.objectID)}
                         className="button-inline"
@@ -187,10 +291,11 @@ const Table = ({ list, onDismiss }) =>
                         Dismiss
                     </Button>
                 </span>
-            </div>
-        )}
-    </div>
-
+                </div>
+            )}
+        </div>
+    );
+}
 
 export default App;
 
